@@ -68,20 +68,29 @@ one.
 
 ## Namespaces
 
-Each game repo sets its own `k8s_namespace` input (see below) so Jobs, Fleets,
-Secrets, and GameServers for different games never collide in `default`. The
-namespace is created automatically on first push if it doesn't already exist —
-no manual `kubectl create namespace` step needed per game. This is why the
-RBAC above is cluster-wide rather than scoped to one namespace: the runner's
-ServiceAccount needs to be able to act in a namespace it's never seen before,
-the moment a new game's first push creates it.
+Each game gets its own namespace so Jobs, Fleets, Secrets, and GameServers for
+different games never collide in `default`. It's auto-derived — the
+"Resolve Namespace and Image Name" step reads `productName` out of the
+checked-out repo's `ProjectSettings/ProjectSettings.asset` (PlayerSettings'
+"Product Name", not "Package Name" — the latter is too often left as Unity's
+template default, e.g. `com.Unity-Technologies.com.unity.template.urp-blank`,
+which would make a useless slug), lowercases/sanitizes it into a valid
+namespace, and falls back to the repo name if `productName` isn't found. The
+runtime image name (`ghcr.io/logansorganization/unity-server-<slug>`) is
+derived the same way. Both can be overridden explicitly via the `k8s_namespace`
+/ `server_image_name` inputs if the auto-derived slug isn't what you want.
+
+The namespace is created automatically on first push if it doesn't already
+exist — no manual `kubectl create namespace` step needed per game. This is why
+the RBAC above is cluster-wide rather than scoped to one namespace: the
+runner's ServiceAccount needs to be able to act in a namespace it's never seen
+before, the moment a new game's first push creates it.
 
 ## Adding a new game repo
 
 1. Copy `examples/deploy.yml` to `.github/workflows/deploy.yml` in the new
-   repo, and set `server_image_name` and `k8s_namespace` to something unique
-   for that game (e.g. `ghcr.io/logansorganization/unity-server-mygame` and
-   `mygame`).
+   repo. No inputs needed by default — namespace and image name auto-derive
+   from the project's Product Name (see "Namespaces" above).
 2. Copy `examples/fleet.yaml` to `k8s/fleet.yaml`, rename `CHANGEME` to the
    game's name, adjust replicas/resources if needed.
 3. Copy `examples/Dockerfile` to the repo root.

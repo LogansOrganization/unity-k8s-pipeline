@@ -4,9 +4,15 @@ on:
   workflow_call:
     inputs:
       server_image_name:
-        description: "Full image ref for the runtime server image, e.g. ghcr.io/logansorganization/unity-server-mygame"
-        required: true
+        description: "Override for the runtime server image ref. Auto-derived from the Unity project's Product Name (PlayerSettings) if left blank, falling back to the repo name."
+        required: false
         type: string
+        default: ""
+      k8s_namespace:
+        description: "Override for the target Kubernetes namespace. Auto-derived the same way as server_image_name if left blank. Created automatically on first use if it doesn't exist."
+        required: false
+        type: string
+        default: ""
       unity_ci_image:
         description: "Shared Unity build toolchain image. Only override if this game needs a different Unity version than the default toolchain build."
         required: false
@@ -22,11 +28,6 @@ on:
         required: false
         type: string
         default: k8s/fleet.yaml
-      k8s_namespace:
-        description: "Kubernetes namespace the Job/Fleet/Secrets are created in"
-        required: false
-        type: string
-        default: default
     secrets:
       UNITY_LICENSE:
         required: true
@@ -44,10 +45,35 @@ jobs:
       contents: read
       packages: write
 
+    outputs:
+      namespace: ${{ steps.resolve.outputs.namespace }}
+
     steps:
 
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve Namespace and Image Name
+        id: resolve
+        env:
+          INPUT_NAMESPACE: ${{ inputs.k8s_namespace }}
+          INPUT_IMAGE_NAME: ${{ inputs.server_image_name }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          PRODUCT_NAME=$(grep -m1 '^\s*productName:' ProjectSettings/ProjectSettings.asset | sed 's/.*productName:[[:space:]]*//' || true)
+          SOURCE="${PRODUCT_NAME:-$REPO_NAME}"
+          SLUG=$(echo "$SOURCE" | tr '[:upper:]' '[:lower:]' | tr ' _' '-' | tr -cd 'a-z0-9-' | sed 's/^-*//; s/-*$//')
+          SLUG=${SLUG:0:63}
+          SLUG=$(echo "$SLUG" | sed 's/-*$//')
+
+          NAMESPACE="${INPUT_NAMESPACE:-$SLUG}"
+          IMAGE_NAME="${INPUT_IMAGE_NAME:-ghcr.io/logansorganization/unity-server-$SLUG}"
+
+          echo "Resolved slug source: $([ -n "$PRODUCT_NAME" ] && echo 'Product Name' || echo 'repo name') ($SOURCE)"
+          echo "Resolved namespace: $NAMESPACE"
+          echo "Resolved image name: $IMAGE_NAME"
+          echo "namespace=$NAMESPACE" >> "$GITHUB_OUTPUT"
+          echo "image_name=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Extract Unity Serial from License
         env:
@@ -69,13 +95,13 @@ jobs:
 
       - name: Ensure Namespace Exists
         env:
-          NAMESPACE: ${{ inputs.k8s_namespace }}
+          NAMESPACE: ${{ steps.resolve.outputs.namespace }}
         run: |
           kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply --request-timeout=15s -f -
 
       - name: Ensure GHCR Pull Secret
         env:
-          NAMESPACE: ${{ inputs.k8s_namespace }}
+          NAMESPACE: ${{ steps.resolve.outputs.namespace }}
         run: |
           # imagePullSecrets are namespace-scoped, so a freshly created namespace
           # needs its own copy — propagated from the one-time secret in `default`
@@ -96,7 +122,7 @@ jobs:
           GH_TOKEN_VALUE: ${{ secrets.GITHUB_TOKEN }}
           UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
           UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
-          NAMESPACE: ${{ inputs.k8s_namespace }}
+          NAMESPACE: ${{ steps.resolve.outputs.namespace }}
         run: |
           kubectl create secret generic unity-build-token-${{ github.sha }} \
             --from-literal=token="$GH_TOKEN_VALUE" \
@@ -119,7 +145,7 @@ jobs:
           GIT_REPO_URL: https://github.com/${{ github.repository }}.git
           UNITY_CI_IMAGE: ${{ inputs.unity_ci_image }}
           BUILD_METHOD: ${{ inputs.build_method }}
-          NAMESPACE: ${{ inputs.k8s_namespace }}
+          NAMESPACE: ${{ steps.resolve.outputs.namespace }}
         run: |
           cat <<JOBEOF | kubectl apply --request-timeout=15s -f -
           apiVersion: batch/v1
@@ -176,7 +202,7 @@ jobs:
 
       - name: Wait For Unity Build Job
         env:
-          NAMESPACE: ${{ inputs.k8s_namespace }}
+          NAMESPACE: ${{ steps.resolve.outputs.namespace }}
         run: |
           for i in $(seq 1 120); do
             POD=$(kubectl get pods -n "$NAMESPACE" -l job-name=unity-build-${{ github.sha }} --request-timeout=15s -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
@@ -203,7 +229,7 @@ jobs:
 
       - name: Extract Build Output
         env:
-          NAMESPACE: ${{ inputs.k8s_namespace }}
+          NAMESPACE: ${{ steps.resolve.outputs.namespace }}
         run: |
           kubectl cp "$POD_NAME:/workspace/buildServer" ./buildServer -n "$NAMESPACE" --request-timeout=15s
           echo "Unity build exit code was $BUILD_JOB_EXIT_CODE"
@@ -212,22 +238,26 @@ jobs:
       - name: Clean Up Unity Build Job
         if: always()
         env:
-          NAMESPACE: ${{ inputs.k8s_namespace }}
+          NAMESPACE: ${{ steps.resolve.outputs.namespace }}
         run: |
           kubectl delete job unity-build-${{ github.sha }} -n "$NAMESPACE" --request-timeout=15s --ignore-not-found
           kubectl delete secret unity-build-token-${{ github.sha }} -n "$NAMESPACE" --request-timeout=15s --ignore-not-found
           kubectl delete secret unity-license-${{ github.sha }} -n "$NAMESPACE" --request-timeout=15s --ignore-not-found
 
       - name: Build Server Runtime Image
+        env:
+          IMAGE_NAME: ${{ steps.resolve.outputs.image_name }}
         run: |
           docker build \
-            -t ${{ inputs.server_image_name }}:${{ github.sha }} \
-            -t ${{ inputs.server_image_name }}:latest .
+            -t "$IMAGE_NAME:${{ github.sha }}" \
+            -t "$IMAGE_NAME:latest" .
 
       - name: Push Server Runtime Image
+        env:
+          IMAGE_NAME: ${{ steps.resolve.outputs.image_name }}
         run: |
-          docker push ${{ inputs.server_image_name }}:${{ github.sha }}
-          docker push ${{ inputs.server_image_name }}:latest
+          docker push "$IMAGE_NAME:${{ github.sha }}"
+          docker push "$IMAGE_NAME:latest"
 
   deploy:
     needs: build
@@ -244,7 +274,7 @@ jobs:
 
       - name: Apply Fleet
         env:
-          NAMESPACE: ${{ inputs.k8s_namespace }}
+          NAMESPACE: ${{ needs.build.outputs.namespace }}
         run: |
           kubectl apply -n "$NAMESPACE" -f ${{ inputs.fleet_manifest }}
           FLEET_NAME=$(kubectl get -n "$NAMESPACE" -f ${{ inputs.fleet_manifest }} -o jsonpath='{.metadata.name}')
@@ -252,7 +282,7 @@ jobs:
 
       - name: Wait For Fleet Rollout
         env:
-          NAMESPACE: ${{ inputs.k8s_namespace }}
+          NAMESPACE: ${{ needs.build.outputs.namespace }}
         run: |
           for i in $(seq 1 30); do
             READY=$(kubectl get fleet "$FLEET_NAME" -n "$NAMESPACE" -o jsonpath='{.status.readyReplicas}')
