@@ -1,0 +1,51 @@
+# Copy this to k8s/fleet.yaml in a new game repo. This one file stays
+# project-owned (rename, adjust replicas/resources/port per game) — the
+# reusable workflow just applies whatever's here and waits on its rollout.
+apiVersion: agones.dev/v1
+kind: Fleet
+metadata:
+  name: CHANGEME-server
+spec:
+  replicas: 2
+  scheduling: Packed
+  strategy:
+    type: Recreate
+
+  template:
+    metadata:
+      labels:
+        app: CHANGEME-server
+
+    spec:
+      # Name of the container Agones should treat as the game server process.
+      # Required once the Agones sidecar is injected, since the pod then has >1 container.
+      container: unity-server
+
+      ports:
+        - name: default
+          portPolicy: Dynamic
+          containerPort: 7777
+          protocol: UDP
+
+      health:
+        initialDelaySeconds: 10
+        periodSeconds: 10
+        failureThreshold: 3
+
+      template:
+        spec:
+          imagePullSecrets:
+            - name: ghcr-pull-secret
+          containers:
+            - name: unity-server
+              # CI replaces __IMAGE_TAG__ before `kubectl apply`.
+              image: ghcr.io/logansorganization/unity-server-CHANGEME:__IMAGE_TAG__
+
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "512Mi"
+
+                limits:
+                  cpu: "2"
+                  memory: "2Gi"

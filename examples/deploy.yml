@@ -1,0 +1,18 @@
+# Copy this to .github/workflows/deploy.yml in a new game repo and adjust
+# server_image_name (and build_method if your build script isn't Build.Server).
+name: Build and Deploy Unity Server
+
+on:
+  push:
+    branches:
+      - dev
+
+jobs:
+  deploy:
+    uses: LogansOrganization/unity-k8s-pipeline/.github/workflows/deploy.yml@v1
+    with:
+      server_image_name: ghcr.io/logansorganization/unity-server-CHANGEME
+    secrets:
+      UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+      UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+      UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}

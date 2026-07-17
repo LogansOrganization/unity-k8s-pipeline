@@ -1,0 +1,47 @@
+name: Build and Publish Unity Toolchain Image
+
+# This builds the *generic* Unity Editor build image (no game code — that's
+# cloned fresh per-run by entrypoint.sh) and publishes it once as a versioned
+# tag that every game repo's deploy points at. It only needs to run when this
+# image itself changes, not on every game's push.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile.unity-build
+      - entrypoint.sh
+      - .github/workflows/build-toolchain-image.yml
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (defaults to v1)"
+        required: false
+        default: v1
+
+env:
+  IMAGE_NAME: ghcr.io/logansorganization/unity-ci-build
+
+jobs:
+  build:
+    runs-on: self-hosted
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push
+        env:
+          TAG: ${{ inputs.tag || 'v1' }}
+        run: |
+          docker build -f Dockerfile.unity-build -t "$IMAGE_NAME:$TAG" .
+          docker push "$IMAGE_NAME:$TAG"

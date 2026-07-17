@@ -1,0 +1,23 @@
+// Copy this to Assets/Editor/Build.cs in a new game repo. Update `scenes` for
+// the project. The method name (Build.Server) must match the pipeline's
+// build_method input if you rename it.
+using UnityEditor;
+using UnityEditor.Build.Reporting;
+
+public static class Build
+{
+    public static void Server()
+    {
+        BuildPlayerOptions options = new BuildPlayerOptions
+        {
+            scenes = new[] { "Assets/Scenes/SampleScene.unity" },
+            locationPathName = "buildServer/Server",
+            target = BuildTarget.StandaloneLinux64,
+            subtarget = (int)StandaloneBuildSubtarget.Server,
+            options = BuildOptions.None
+        };
+
+        BuildReport report = BuildPipeline.BuildPlayer(options);
+        EditorApplication.Exit(report.summary.result == BuildResult.Succeeded ? 0 : 1);
+    }
+}
