@@ -34,14 +34,16 @@ There are two Docker images in this pipeline, and only one of them belongs here:
 - `.github/workflows/build-toolchain-image.yml` — builds and publishes the
   toolchain image itself, only runs when this repo's own Dockerfile/entrypoint
   change (not on every game's push).
-- `k8s/rbac-build.yaml`, `k8s/rbac-deploy.yaml` — one-time cluster RBAC,
-  shared across every game repo (not per-project).
+- `k8s/rbac-build.yaml`, `k8s/rbac-deploy.yaml` — one-time cluster RBAC. These
+  are `ClusterRole`/`ClusterRoleBinding` (not namespaced) — granted once, ever,
+  they cover every namespace any game repo's Fleet/Job ends up in, including
+  ones that don't exist yet.
 - `examples/` — starter files to copy into a new game repo: `deploy.yml`
   (caller workflow), `fleet.yaml`, `Dockerfile`, `Build.cs`.
 
 ## One-time cluster setup
 
-Only needed once, ever, regardless of how many game repos use this:
+Only needed once, ever, regardless of how many game repos or namespaces use this:
 
 ```bash
 helm repo add agones https://agones.dev/chart/stable
@@ -58,11 +60,28 @@ kubectl create secret docker-registry ghcr-pull-secret \
   --namespace=default
 ```
 
+`ghcr-pull-secret` only needs creating in `default` — the pipeline copies it
+into each game's namespace automatically the first time it's needed (see
+"Ensure GHCR Pull Secret" in the workflow), since `imagePullSecrets` are
+namespace-scoped and a freshly auto-created namespace wouldn't otherwise have
+one.
+
+## Namespaces
+
+Each game repo sets its own `k8s_namespace` input (see below) so Jobs, Fleets,
+Secrets, and GameServers for different games never collide in `default`. The
+namespace is created automatically on first push if it doesn't already exist —
+no manual `kubectl create namespace` step needed per game. This is why the
+RBAC above is cluster-wide rather than scoped to one namespace: the runner's
+ServiceAccount needs to be able to act in a namespace it's never seen before,
+the moment a new game's first push creates it.
+
 ## Adding a new game repo
 
 1. Copy `examples/deploy.yml` to `.github/workflows/deploy.yml` in the new
-   repo, and set `server_image_name` to something unique for that game (e.g.
-   `ghcr.io/logansorganization/unity-server-mygame`).
+   repo, and set `server_image_name` and `k8s_namespace` to something unique
+   for that game (e.g. `ghcr.io/logansorganization/unity-server-mygame` and
+   `mygame`).
 2. Copy `examples/fleet.yaml` to `k8s/fleet.yaml`, rename `CHANGEME` to the
    game's name, adjust replicas/resources if needed.
 3. Copy `examples/Dockerfile` to the repo root.
@@ -71,7 +90,8 @@ kubectl create secret docker-registry ghcr-pull-secret \
 5. Set repo secrets (or org-level secrets, since these can be shared across
    your own projects): `UNITY_LICENSE`, `UNITY_EMAIL`, `UNITY_PASSWORD`.
 6. Push to `dev`. That's it — no Dockerfile.unity-build, no entrypoint.sh, no
-   build-job.yaml, no RBAC files needed in the new repo at all.
+   build-job.yaml, no RBAC files, no manual namespace/pull-secret setup needed
+   in the new repo or on the cluster at all.
 
 If a game needs a different Unity Editor version than the default toolchain
 image, override the `unity_ci_image` input in that repo's `deploy.yml` (see
@@ -93,5 +113,5 @@ fires once the Job actually finishes. Check for and remove strays manually:
 
 ```bash
 kubectl get jobs -A | grep unity-build
-kubectl delete job unity-build-<sha> -n default
+kubectl delete job unity-build-<sha> -n <namespace>
 ```

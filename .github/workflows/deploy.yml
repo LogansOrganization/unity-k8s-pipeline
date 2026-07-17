@@ -67,6 +67,30 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Ensure Namespace Exists
+        env:
+          NAMESPACE: ${{ inputs.k8s_namespace }}
+        run: |
+          kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply --request-timeout=15s -f -
+
+      - name: Ensure GHCR Pull Secret
+        env:
+          NAMESPACE: ${{ inputs.k8s_namespace }}
+        run: |
+          # imagePullSecrets are namespace-scoped, so a freshly created namespace
+          # needs its own copy — propagated from the one-time secret in `default`
+          # rather than requiring it be recreated manually per game.
+          if [ "$NAMESPACE" != "default" ]; then
+            kubectl get secret ghcr-pull-secret -n default -o jsonpath='{.data.\.dockerconfigjson}' \
+              | base64 -d > /tmp/dockerconfig.json
+            kubectl create secret generic ghcr-pull-secret \
+              --type=kubernetes.io/dockerconfigjson \
+              --from-file=.dockerconfigjson=/tmp/dockerconfig.json \
+              --namespace="$NAMESPACE" \
+              --dry-run=client -o yaml | kubectl apply --request-timeout=15s -f -
+            rm -f /tmp/dockerconfig.json
+          fi
+
       - name: Create Per-Run Secrets
         env:
           GH_TOKEN_VALUE: ${{ secrets.GITHUB_TOKEN }}

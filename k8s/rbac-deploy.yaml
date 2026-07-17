@@ -1,28 +1,26 @@
 # One-time cluster setup (apply once, like k8s/rbac-build.yaml) — grants the CI
-# runner's ServiceAccount permission to manage Agones Fleets in the target
-# namespace, for any game repo using this pipeline:
+# runner's ServiceAccount cluster-wide permission to manage Agones Fleets, for
+# any game repo using this pipeline in any namespace:
 #
 #   kubectl apply -f k8s/rbac-deploy.yaml
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
   name: unity-fleet-manager
-  namespace: default
 rules:
   - apiGroups: ["agones.dev"]
     resources: ["fleets"]
     verbs: ["get", "list", "watch", "create", "patch", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
   name: unity-fleet-manager-binding
-  namespace: default
 subjects:
   - kind: ServiceAccount
     name: github-runner
     namespace: github-runner
 roleRef:
-  kind: Role
+  kind: ClusterRole
   name: unity-fleet-manager
   apiGroup: rbac.authorization.k8s.io
