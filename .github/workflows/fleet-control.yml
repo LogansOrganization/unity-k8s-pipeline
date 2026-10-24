@@ -1,0 +1,79 @@
+name: Start / Stop / Restart / Scale a Fleet
+run-name: "${{ inputs.action }} ${{ inputs.namespace }}/${{ inputs.fleet }}${{ inputs.action == 'scale' && format(' to {0}', inputs.replicas) || '' }}"
+
+# The games panel presses this. Only patches the Fleet (which the runner may do); Agones
+# does the rest: scaling adds/removes GameServers, a template change replaces them all.
+on:
+  workflow_dispatch:
+    inputs:
+      namespace:
+        description: 'Namespace of the game'
+        required: true
+        type: string
+      fleet:
+        description: 'Fleet name'
+        required: true
+        type: string
+      action:
+        description: 'What to do'
+        type: choice
+        options: [start, stop, restart, scale]
+        default: restart
+      replicas:
+        description: 'Server count (scale; also start when the previous count is unknown)'
+        required: false
+        default: '2'
+        type: string
+
+concurrency:
+  group: fleet-${{ inputs.namespace }}-${{ inputs.fleet }}
+  cancel-in-progress: false
+
+jobs:
+  control:
+    runs-on: [self-hosted, homelab-k8s]
+    timeout-minutes: 15
+    env:
+      NS: ${{ inputs.namespace }}
+      FLEET: ${{ inputs.fleet }}
+      ACTION: ${{ inputs.action }}
+      REPLICAS: ${{ inputs.replicas }}
+    steps:
+      - name: ${{ inputs.action }}
+        run: |
+          set -euo pipefail
+          [[ "$NS" =~ ^[a-z0-9-]{1,63}$ && "$FLEET" =~ ^[a-z0-9-]{1,63}$ ]] || { echo "::error::bad namespace/fleet name"; exit 1; }
+          kubectl get fleet "$FLEET" -n "$NS" >/dev/null || { echo "::error::no fleet $NS/$FLEET"; exit 1; }
+          CURRENT=$(kubectl get fleet "$FLEET" -n "$NS" -o jsonpath='{.spec.replicas}')
+          patch() { kubectl patch fleet "$FLEET" -n "$NS" --type=merge -p "$1"; }
+
+          case "$ACTION" in
+            stop)
+              # Remember the count so start brings back the same number.
+              patch "{\"metadata\":{\"annotations\":{\"homelab/replicas-before-stop\":\"$CURRENT\"}},\"spec\":{\"replicas\":0}}"
+              TARGET=0 ;;
+            start)
+              SAVED=$(kubectl get fleet "$FLEET" -n "$NS" -o jsonpath='{.metadata.annotations.homelab/replicas-before-stop}')
+              TARGET=${SAVED:-$REPLICAS}; [ "$TARGET" -ge 1 ] 2>/dev/null || TARGET=$REPLICAS
+              patch "{\"spec\":{\"replicas\":$TARGET}}" ;;
+            scale)
+              [[ "$REPLICAS" =~ ^[0-9]+$ ]] && (( REPLICAS <= 20 )) || { echo "::error::replicas must be 0-20"; exit 1; }
+              patch "{\"spec\":{\"replicas\":$REPLICAS}}"
+              TARGET=$REPLICAS ;;
+            restart)
+              (( CURRENT >= 1 )) || { echo "::error::the fleet is stopped. Use start."; exit 1; }
+              # A changed pod-template annotation makes Agones replace every GameServer.
+              patch "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"homelab/restarted-at\":\"$(date -u +%FT%TZ)\"}}}}}"
+              TARGET=$CURRENT ;;
+          esac
+
+          echo "Waiting for $TARGET ready server(s)..."
+          for i in $(seq 1 60); do
+            READY=$(kubectl get fleet "$FLEET" -n "$NS" -o jsonpath='{.status.readyReplicas}'); READY=${READY:-0}
+            ALLOC=$(kubectl get fleet "$FLEET" -n "$NS" -o jsonpath='{.status.allocatedReplicas}'); ALLOC=${ALLOC:-0}
+            TOTAL=$(kubectl get fleet "$FLEET" -n "$NS" -o jsonpath='{.status.replicas}'); TOTAL=${TOTAL:-0}
+            if [ "$TARGET" -eq 0 ] && [ "$TOTAL" -eq 0 ]; then break; fi
+            if [ "$TARGET" -gt 0 ] && [ $((READY + ALLOC)) -ge "$TARGET" ] && [ "$TOTAL" -eq "$TARGET" ]; then break; fi
+            sleep 5
+          done
+          echo "## \`$NS/$FLEET\`: $ACTION done ($((READY + ALLOC))/$TARGET ready)" >> "$GITHUB_STEP_SUMMARY"
