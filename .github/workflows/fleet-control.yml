@@ -53,7 +53,7 @@ jobs:
               patch "{\"metadata\":{\"annotations\":{\"homelab/replicas-before-stop\":\"$CURRENT\"}},\"spec\":{\"replicas\":0}}"
               TARGET=0 ;;
             start)
-              SAVED=$(kubectl get fleet "$FLEET" -n "$NS" -o jsonpath='{.metadata.annotations.homelab/replicas-before-stop}')
+              SAVED=$(kubectl get fleet "$FLEET" -n "$NS" -o jsonpath="{.metadata.annotations['homelab/replicas-before-stop']}")
               TARGET=${SAVED:-$REPLICAS}; [ "$TARGET" -ge 1 ] 2>/dev/null || TARGET=$REPLICAS
               patch "{\"spec\":{\"replicas\":$TARGET}}" ;;
             scale)
