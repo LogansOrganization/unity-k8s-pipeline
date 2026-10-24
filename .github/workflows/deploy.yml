@@ -38,7 +38,7 @@ on:
 
 jobs:
   build:
-    runs-on: self-hosted
+    runs-on: [self-hosted, homelab-k8s]
     timeout-minutes: 45
 
     permissions:
@@ -51,7 +51,7 @@ jobs:
     steps:
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Resolve Namespace and Image Name
         id: resolve
@@ -87,11 +87,21 @@ jobs:
           rm -f /tmp/unity_license.ulf
 
       - name: Login to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check Cluster Access
+        env:
+          NAMESPACE: ${{ steps.resolve.outputs.namespace }}
+        run: |
+          # The in-cluster runner comes with a kubeconfig for its ServiceAccount (homelab-k8s).
+          if ! kubectl auth can-i create jobs.batch -n "$NAMESPACE" --request-timeout=15s | grep -qx yes; then
+            echo "::error::This runner can't create Jobs in '$NAMESPACE'. Is it the in-cluster runner (label homelab-k8s), and is k8s/rbac-build.yaml applied?"
+            exit 1
+          fi
 
       - name: Ensure Namespace Exists
         env:
@@ -261,12 +271,12 @@ jobs:
 
   deploy:
     needs: build
-    runs-on: self-hosted
+    runs-on: [self-hosted, homelab-k8s]
 
     steps:
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set Fleet Image Tag
         run: |
@@ -296,3 +306,25 @@ jobs:
           done
           echo "Timed out waiting for fleet rollout" >&2
           exit 1
+
+      - name: Where Players Connect
+        if: always()
+        env:
+          NAMESPACE: ${{ needs.build.outputs.namespace }}
+        run: |
+          # Game servers register with unity-relay; its server list is what the game's browser shows.
+          RELAY=http://relay.unity-relay.svc.cluster.local:8080
+          sleep 20   # give fresh servers a moment to register
+          SERVERS=$(curl -fsS --max-time 10 "$RELAY/servers" || echo '[]')
+          HOST=$(echo "$SERVERS" | jq -r '.[0].connect_address // empty' | sed 's/:[0-9]*$//')
+          {
+            echo "## \`${FLEET_NAME:-fleet}\` deployed (${{ github.sha }})"
+            echo ""
+            echo "Fleet: $(kubectl get fleet "${FLEET_NAME}" -n "$NAMESPACE" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo '?') ready."
+            echo ""
+            echo "| Server | Players | Connect |"
+            echo "|---|---|---|"
+            echo "$SERVERS" | jq -r '.[] | "| \(.name) | \(.player_count)/\(.max_players) | `\(.connect_address)` |"'
+            echo ""
+            echo "Server browser: the game's \`-relay\` URL is \`http://${HOST:-<relay public host>}:8080\`."
+          } >> "$GITHUB_STEP_SUMMARY"

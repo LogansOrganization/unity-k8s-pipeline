@@ -41,6 +41,25 @@ There are two Docker images in this pipeline, and only one of them belongs here:
 - `examples/` — starter files to copy into a new game repo: `deploy.yml`
   (caller workflow), `fleet.yaml`, `Dockerfile`, `Build.cs`.
 
+## How players get in
+
+Game servers don't get public ports of their own. Each one registers with
+[unity-relay](https://github.com/LogansOrganization/unity-relay), which gives it a UDP port
+from 20000-20100 on its public address and lists it at `http://<relay>:8080/servers`. The
+game's server browser reads that list (launch the client with `-relay http://<host>:8080` to
+point it somewhere else). The relay's own deploy opens those ports on the router, so a push
+to `dev` here is all it takes for a new build to show up for friends.
+
+The last step of a deploy, **Where Players Connect**, puts the registered servers and their
+addresses in the job summary.
+
+## Runner
+
+Jobs run on the in-cluster runner (`runs-on: [self-hosted, homelab-k8s]`). It's managed in the
+private `homelab-k8s` repo and comes with `kubectl` already pointed at the cluster through its
+ServiceAccount, so nothing here configures cluster access. That's what broke this pipeline in
+September 2026: the old runner image had no kubeconfig and the build died at the first `kubectl`.
+
 ## One-time cluster setup
 
 Only needed once, ever, regardless of how many game repos or namespaces use this:

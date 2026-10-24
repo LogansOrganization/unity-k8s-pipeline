@@ -11,6 +11,7 @@ on:
   push:
     branches:
       - dev
+  workflow_dispatch:   # "Run workflow" button: redeploy without pushing
 
 jobs:
   deploy:
